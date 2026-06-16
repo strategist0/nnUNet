@@ -101,6 +101,7 @@ ENV/
 *.png
 # *.nii.gz  # nifti files needed for example_data for github actions tests
 *.nii
+*.gz
 *.tif
 *.bmp
 *.pkl
@@ -110,6 +111,7 @@ ENV/
 *.png
 *.jpg
 *.jpeg
+*.csv
 
 *.model
 

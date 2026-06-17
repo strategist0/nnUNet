@@ -4,6 +4,7 @@ Performs 30 forward passes with MC Dropout and saves:
 - Mean prediction
 - Variance map
 - Entropy map
+- Latency (inference time per case)
 """
 import sys
 import os
@@ -13,11 +14,12 @@ import torch
 import numpy as np
 import SimpleITK as sitk
 import argparse
+import time
 from typing import List, Optional
 from tqdm import tqdm
 from nnunetv2.paths import nnUNet_results, nnUNet_raw
 from nnunetv2.inference.predict_from_raw_data import nnUNetPredictor
-from batchgenerators.utilities.file_and_folder_operations import join, maybe_mkdir_p, load_json, save_json, subfiles
+from batchgenerators.utilities.file_and_folder_operations import join, maybe_mkdir_p, load_json, save_json, subfiles, isfile
 
 from MCDropoututil.model_utils import inject_dropout_layers, enable_mc_dropout, get_unwrapped_network, verify_dropout_injection
 from MCDropoututil.uncertainty_utils import (
@@ -160,7 +162,9 @@ def process_single_case(
 ) -> dict:
     """
     Process a single case with MC Dropout inference.
+    Records wall-clock time for the entire inference process.
     """
+    case_start_time = time.time()
     print(f"\nProcessing: {case_id}")
     
     # Load input files
@@ -225,6 +229,9 @@ def process_single_case(
     print(f"  Variance (top10% voxels): {variance_top10:.6f}")
     print(f"  Entropy  (top10% voxels): {entropy_top10:.6f}")
     
+    case_elapsed_time = time.time() - case_start_time
+    print(f"  Latency: {case_elapsed_time:.2f} seconds")
+    
     return {
         'case_id': case_id,
         'variance_stats': variance_stats,
@@ -233,7 +240,7 @@ def process_single_case(
         'entropy_tumor_stats': entropy_tumor_stats,
         'variance_top10': variance_top10,
         'entropy_top10': entropy_top10,
-        'entropy_top10': entropy_top10
+        'latency_seconds': case_elapsed_time
     }
 
 
@@ -287,7 +294,14 @@ def run_mc_dropout_inference(args):
     num_modalities = len(dataset_json['channel_names'])
     
     # Get case list
-    case_list = get_case_list(args.input_folder, args.case_ids)
+    case_list = None
+    if args.case_ids_file:
+        with open(args.case_ids_file, 'r') as f:
+            case_list = [line.strip() for line in f if line.strip()]
+        # Remove file extensions if present (e.g., "BraTS2021_00002_0000.nii" -> "BraTS2021_00002_0000")
+        case_list = [c.replace('_0000.nii', '').replace('_0000.nii.gz', '') for c in case_list]
+    else:
+        case_list = get_case_list(args.input_folder, args.case_ids)
     if args.max_cases:
         case_list = case_list[:args.max_cases]
     print(f"Processing {len(case_list)} cases")
@@ -297,6 +311,23 @@ def run_mc_dropout_inference(args):
     all_results = []
     
     for case_id in case_list:
+        # Check if case already processed (resume capability)
+        prediction_file = join(args.output_folder, f'{case_id}.nii.gz')
+        variance_file = join(args.output_folder, f'{case_id}_variance.nii.gz')
+        entropy_file = join(args.output_folder, f'{case_id}_entropy.nii.gz')
+        if isfile(prediction_file) and isfile(variance_file) and isfile(entropy_file):
+            print(f"\n[SKIP] {case_id} (already processed)")
+            # Load previous result from summary if available
+            try:
+                existing_summary = load_json(join(args.output_folder, 'summary.json'))
+                for result in existing_summary.get('results', []):
+                    if result.get('case_id') == case_id:
+                        all_results.append(result)
+                        break
+            except:
+                pass
+            continue
+        
         result = process_single_case(
             case_id, predictor, args.input_folder, args.output_folder,
             num_modalities, args.num_mc_iterations, num_classes,
@@ -305,15 +336,23 @@ def run_mc_dropout_inference(args):
         all_results.append(result)
     
     # Save summary
+    latencies = [r.get('latency_seconds', 0) for r in all_results]
+    avg_latency = np.mean(latencies) if latencies else 0
+    total_latency = np.sum(latencies) if latencies else 0
+    
     summary = {
         'num_mc_iterations': args.num_mc_iterations,
         'total_cases': len(case_list),
+        'avg_latency_seconds': float(avg_latency),
+        'total_latency_seconds': float(total_latency),
         'results': all_results
     }
     save_json(summary, join(args.output_folder, 'summary.json'))
     
     print("\n" + "="*80)
     print(f"Completed! Processed {len(case_list)} cases")
+    print(f"Average latency per case: {avg_latency:.2f} seconds")
+    print(f"Total latency: {total_latency:.2f} seconds")
     print("="*80)
 
 
@@ -331,6 +370,8 @@ def parse_arguments():
                        help='Output folder (auto-constructed from dataset if not provided)')
     parser.add_argument('--case_ids', type=str, nargs='+', default=None,
                        help='Specific case IDs (default: all)')
+    parser.add_argument('--case_ids_file', type=str, default=None,
+                       help='File containing case IDs (one per line)')
     parser.add_argument('--max_cases', type=int, default=None,
                        help='Max number of cases')
     parser.add_argument('--num_mc_iterations', type=int, default=30)

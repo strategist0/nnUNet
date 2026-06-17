@@ -45,9 +45,8 @@ coverage.xml
 *,cover
 .hypothesis/
 
-# Translations
-*.mo
-*.pot
+# LaTeX compilation outputs and manuscript files
+LaTeX/
 
 # Django stuff:
 *.log
@@ -95,7 +94,18 @@ ENV/
 *.npy
 *.jpg
 *.jpeg
+*.json
 .idea
+*.tex
+*.aux
+*.bst
+*.cls
+*.out
+*.fls
+*.fdb_latexmk
+*.bib
+*.md
+*.ps1
 *.txt
 .idea/*
 *.png
